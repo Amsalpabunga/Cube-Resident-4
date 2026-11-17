@@ -1,0 +1,160 @@
+name: Build signed CubeEvil4 Core APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "CubeEvil4-Android-master.zip"
+      - "port/**"
+      - ".github/workflows/build-core-signed.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cubeevil4-core-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate project source
+        run: |
+          set -euo pipefail
+          if [ -f "$GITHUB_WORKSPACE/CubeEvil4-Android-master.zip" ]; then
+            mkdir -p "$RUNNER_TEMP/cube-source"
+            unzip -q "$GITHUB_WORKSPACE/CubeEvil4-Android-master.zip" -d "$RUNNER_TEMP/cube-source"
+            SRC_ROOT="$RUNNER_TEMP/cube-source/CubeEvil4-Android-master"
+          elif [ -f "$GITHUB_WORKSPACE/port/tools/whole_build_android.sh" ]; then
+            SRC_ROOT="$GITHUB_WORKSPACE"
+          else
+            echo "::error::Upload CubeEvil4-Android-master.zip to the repository root, or upload the extracted project."
+            exit 1
+          fi
+          test -f "$SRC_ROOT/port/tools/whole_build_android.sh"
+          test -f "$SRC_ROOT/port/android-decomp/gradlew"
+          echo "SRC_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+          echo "Using source: $SRC_ROOT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: 28.2.13676358
+          add-to-path: true
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3 unzip
+
+      - name: Build CubeEvil4 game core (ARM32 + ARM64)
+        env:
+          RE4_JOBS: "2"
+        run: |
+          set -euo pipefail
+          chmod +x "$SRC_ROOT/port/tools/whole_build_android.sh"
+          "$SRC_ROOT/port/tools/whole_build_android.sh" --abi all
+
+      - name: Build Core release APK
+        run: |
+          set -euo pipefail
+          cd "$SRC_ROOT/port/android-decomp"
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleCoreRelease
+
+      - name: Prepare APK signing tools
+        id: signing
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          echo "build_tools=$BUILD_TOOLS" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/apk-signing"
+
+          if [ -n "${SIGNING_KEYSTORE_BASE64:-}" ] &&
+             [ -n "${SIGNING_STORE_PASSWORD:-}" ] &&
+             [ -n "${SIGNING_KEY_ALIAS:-}" ] &&
+             [ -n "${SIGNING_KEY_PASSWORD:-}" ]; then
+            printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode \
+              > "$RUNNER_TEMP/apk-signing/release.jks"
+            echo "persistent_key=true" >> "$GITHUB_OUTPUT"
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/apk-signing/temporary.jks" \
+              -storetype JKS \
+              -storepass temporary-build-only \
+              -keypass temporary-build-only \
+              -alias cube-build \
+              -keyalg RSA -keysize 2048 -validity 3650 \
+              -dname "CN=CubeEvil4 CI,O=Local Build,C=ID"
+            echo "persistent_key=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No persistent signing secrets configured. This APK is signed with a temporary key and cannot update-install over APKs signed with a different key."
+          fi
+
+      - name: Align and sign APK
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APK="$(find "$SRC_ROOT/port/android-decomp/app/build/outputs/apk/core/release" \
+            -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' | head -n 1)"
+          test -n "$APK"
+          TOOLS="${{ steps.signing.outputs.build_tools }}"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          "$TOOLS/zipalign" -f -p 4 "$APK" "$GITHUB_WORKSPACE/dist/CubeEvil4-core-aligned.apk"
+
+          if [ "${{ steps.signing.outputs.persistent_key }}" = "true" ]; then
+            KS="$RUNNER_TEMP/apk-signing/release.jks"
+            STORE_PASS="$SIGNING_STORE_PASSWORD"
+            KEY_ALIAS_VALUE="$SIGNING_KEY_ALIAS"
+            KEY_PASS="$SIGNING_KEY_PASSWORD"
+          else
+            KS="$RUNNER_TEMP/apk-signing/temporary.jks"
+            STORE_PASS="temporary-build-only"
+            KEY_ALIAS_VALUE="cube-build"
+            KEY_PASS="temporary-build-only"
+          fi
+
+          "$TOOLS/apksigner" sign \
+            --ks "$KS" \
+            --ks-pass "pass:$STORE_PASS" \
+            --key-pass "pass:$KEY_PASS" \
+            --ks-key-alias "$KEY_ALIAS_VALUE" \
+            --out "$GITHUB_WORKSPACE/dist/CubeEvil4-core-signed.apk" \
+            "$GITHUB_WORKSPACE/dist/CubeEvil4-core-aligned.apk"
+
+          "$TOOLS/apksigner" verify --verbose --print-certs \
+            "$GITHUB_WORKSPACE/dist/CubeEvil4-core-signed.apk"
+          rm "$GITHUB_WORKSPACE/dist/CubeEvil4-core-aligned.apk"
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-core-signed
+          path: dist/CubeEvil4-core-signed.apk
+          if-no-files-found: error
+          retention-days: 14
+          
