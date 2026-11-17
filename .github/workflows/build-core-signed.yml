@@ -50,13 +50,17 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: 28.2.13676358
-          add-to-path: true
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager --install "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_PATH"
+          test -f "$ANDROID_HOME/ndk/28.2.13676358/source.properties"
+          grep 'Pkg.Revision' "$ANDROID_HOME/ndk/28.2.13676358/source.properties"
 
       - name: Install native build tools
         run: |
@@ -157,4 +161,3 @@ jobs:
           path: dist/CubeEvil4-core-signed.apk
           if-no-files-found: error
           retention-days: 14
-          
