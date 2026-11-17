@@ -59,10 +59,8 @@ jobs:
       - name: Install Android NDK
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager --install "ndk;28.2.13676358"
+          sdkmanager --sdk_root="$ANDROID_HOME" --install "ndk;28.2.13676358"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-          echo "$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_PATH"
           test -f "$ANDROID_HOME/ndk/28.2.13676358/source.properties"
           grep 'Pkg.Revision' "$ANDROID_HOME/ndk/28.2.13676358/source.properties"
 
