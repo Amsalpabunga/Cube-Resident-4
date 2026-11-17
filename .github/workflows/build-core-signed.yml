@@ -3,7 +3,7 @@ name: Build signed CubeEvil4 Core APK
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "CubeEvil4-Android-master.zip"
       - "port/**"
@@ -50,7 +50,10 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: true
 
       - name: Install Android NDK
         run: |
@@ -124,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           APK="$(find "$SRC_ROOT/port/android-decomp/app/build/outputs/apk/core/release" \
-            -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' | head -n 1)"
+          -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$APK"
           TOOLS="${{ steps.signing.outputs.build_tools }}"
           mkdir -p "$GITHUB_WORKSPACE/dist"
@@ -155,7 +158,7 @@ jobs:
           rm "$GITHUB_WORKSPACE/dist/CubeEvil4-core-aligned.apk"
 
       - name: Upload signed APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: CubeEvil4-core-signed
           path: dist/CubeEvil4-core-signed.apk
